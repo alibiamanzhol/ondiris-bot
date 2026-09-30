@@ -1,5 +1,14 @@
 @echo off
 chcp 65001 >nul
+set "HERE=%~dp0"
+if "%HERE:~0,2%"=="\\" (
+  echo Папка с ботом находится внутри Ubuntu/WSL или в сетевой папке: %HERE%
+  echo Отсюда start.bat работать не может. Сделайте одно из двух:
+  echo  1. Перенесите папку бота в обычную папку Windows, например на Рабочий стол, и запустите start.bat там.
+  echo  2. Или запустите бота в Ubuntu: откройте Ubuntu, перейдите в папку бота и выполните  bash start.sh
+  pause
+  exit /b 1
+)
 cd /d "%~dp0"
 
 where python >nul 2>nul
