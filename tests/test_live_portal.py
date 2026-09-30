@@ -27,5 +27,5 @@ def test_real_portal_known_company_all_pages():
     print(f"\n::notice title=LIVE portal::{stats}")
     assert found.found and "Торг-Партнер" in found.company
     assert found.total > 100  # собраны все страницы, а не только первая
-    assert 0 < len(found.records) <= found.total
+    assert len(found.records) == found.total  # каждая строка сайта — отдельная запись
     assert 0 < found.active <= len(found.records)

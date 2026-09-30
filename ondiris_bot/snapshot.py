@@ -58,11 +58,17 @@ def _clean(value) -> str:
 def state_from_rows(bin_: str, rows: list[dict]) -> OrgState:
     if not rows:
         return OrgState(bin=bin_, found=False)
-    records = {}
+    parsed = []
     for r in rows:
         name = _clean(r.get("product_name")) or "(без наименования)"
         key = "|".join((_clean(r.get("registration_number")), _clean(r.get("product_code")), name.casefold()))
-        records[key] = (name, r.get("is_active") is not False)
+        parsed.append((key, name, r.get("is_active") is not False))
+    # На портале встречаются полностью одинаковые строки — нумеруем их, чтобы каждая строка сайта была записью.
+    # Сортировка делает нумерацию независимой от порядка строк в ответе.
+    records, seen = {}, Counter()
+    for key, name, active in sorted(parsed, key=lambda x: (x[0], not x[2])):
+        seen[key] += 1
+        records[f"{key}#{seen[key]}" if seen[key] > 1 else key] = (name, active)
     company = next((_clean(r.get("company_name")) for r in rows if _clean(r.get("company_name"))), "")
     return OrgState(bin=bin_, found=True, company=company, records=records, total=len(rows))
 

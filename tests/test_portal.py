@@ -52,6 +52,14 @@ def test_same_code_under_different_registration_numbers_counted_separately():
     assert state.product_names() == ["Товар 1"]
 
 
+def test_identical_rows_counted_like_site_and_order_independent():
+    rows = [row(1), row(1), {**row(1), "is_active": False}, row(2)]
+    a = run(client(paged(rows)).get_state(BIN))
+    b = run(client(paged(list(reversed(rows)))).get_state(BIN))
+    assert a.total == 4 and len(a.records) == 4 and a.active == 3
+    assert a.records == b.records
+
+
 def test_not_found():
     state = run(client(paged([])).get_state(BIN))
     assert not state.found and state.records == {} and state.total == 0
