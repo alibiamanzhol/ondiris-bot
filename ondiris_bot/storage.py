@@ -64,6 +64,7 @@ class Subscription:
     label: str
     snapshot: OrgState | None
     silent_baseline: bool
+    snapshot_at: str | None = None
 
     @property
     def title(self) -> str:
@@ -249,4 +250,5 @@ def _sub(r: sqlite3.Row) -> Subscription:
         label=r["label"],
         snapshot=OrgState.from_json(r["snapshot"]) if r["snapshot"] else None,
         silent_baseline=bool(r["silent_baseline"]),
+        snapshot_at=r["snapshot_at"],
     )

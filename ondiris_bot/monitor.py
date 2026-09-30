@@ -25,6 +25,8 @@ class UserResult:
     checked: int = 0
     errors: int = 0
     changes: list[Change] = field(default_factory=list)
+    states: dict[str, OrgState] = field(default_factory=dict)
+    failed: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -105,16 +107,13 @@ class Monitor:
                 new = results.get(sub.bin)
                 if not isinstance(new, OrgState):
                     res.errors += 1
+                    res.failed.append(sub.bin)
                     continue
                 res.checked += 1
+                res.states[sub.bin] = new
                 old = sub.snapshot
-                if old is None:
-                    change = None if sub.silent_baseline else diff(None, new)
-                    new_states.append(new)
-                else:
-                    change = diff(old, new)
-                    if old.to_json() != new.to_json():
-                        new_states.append(new)
+                change = None if old is None and sub.silent_baseline else diff(old, new)
+                new_states.append(new)  # всегда: заодно обновляется время последней проверки
                 if change:
                     changes.append(change)
                     keys.append(f"{sub.bin}:{change.old_digest}>{change.new_digest}")

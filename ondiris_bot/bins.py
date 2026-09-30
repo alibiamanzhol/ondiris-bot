@@ -129,7 +129,20 @@ class UnsupportedFile(Exception):
     pass
 
 
-SUPPORTED_EXTENSIONS = (".xlsx", ".xlsm", ".xls", ".csv", ".txt")
+SUPPORTED_EXTENSIONS = (".xlsx", ".xlsm", ".xls", ".csv", ".txt", ".pdf")
+
+
+def _pdf_text(data: bytes) -> str:
+    from pypdf import PdfReader
+
+    reader = PdfReader(io.BytesIO(data))
+    if reader.is_encrypted and not reader.decrypt(""):
+        raise UnsupportedFile("PDF защищён паролем. Снимите защиту или отправьте БИН текстом.")
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    if not text.strip():
+        raise UnsupportedFile("В PDF нет текста — похоже, это скан или фото. "
+                              "Отправьте Excel, текст или PDF, в котором текст можно выделить.")
+    return text
 
 
 def parse_document(data: bytes, filename: str) -> ParseResult:
@@ -145,7 +158,9 @@ def parse_document(data: bytes, filename: str) -> ParseResult:
         return _parse_cells(cell for row in csv.reader(io.StringIO(text), delimiter=_sniff(text)) for cell in row)
     if ext == ".txt":
         return parse_text(_decode(data))
-    raise UnsupportedFile("Поддерживаются файлы Excel (.xlsx, .xls), .csv и .txt.")
+    if ext == ".pdf":
+        return parse_text(_pdf_text(data))
+    raise UnsupportedFile("Поддерживаются файлы Excel (.xlsx, .xls), .csv, .txt и PDF.")
 
 
 def _sniff(text: str) -> str:

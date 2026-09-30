@@ -2,13 +2,12 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, time
-from html import escape
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .bins import ParseResult, parse_text
 from .config import parse_hhmm
-from .messages import format_card, short_company
+from .messages import (UNKNOWN, counts_line, format_card, local_time, plural, status_line)
 from .monitor import Monitor
 from .portal import PortalClient, PortalError
 from .storage import Storage
@@ -17,6 +16,7 @@ log = logging.getLogger(__name__)
 
 LIST_PAGE_SIZE = 30
 INVALID_SHOWN = 20
+REPORT_LIMIT = 200
 
 
 @dataclass
@@ -28,18 +28,19 @@ class AddOutcome:
 
     def text(self) -> str:
         if not self.added and not self.existed:
-            lines = ["❌ Не нашёл ни одного корректного БИН/ИИН (12 цифр)."]
+            lines = ["❌ Не нашёл ни одного корректного БИН/ИИН.",
+                     "БИН/ИИН — это 12 цифр. Проверьте номер и отправьте ещё раз."]
             if self.invalid:
-                lines.append("Не распознано: " + ", ".join(self.invalid[:INVALID_SHOWN]))
+                lines.append("Не подошли: <code>" + ", ".join(self.invalid[:INVALID_SHOWN]) + "</code>")
             return "\n".join(lines)
-        lines = [f"✅ Добавлено: <b>{len(self.added)}</b>"]
+        lines = [f"➕ Добавлено в мониторинг: <b>{len(self.added)}</b>"]
         if self.existed:
-            lines.append(f"♻️ Уже были в списке: {len(self.existed)}")
+            lines.append(f"♻️ Уже были в вашем списке: {len(self.existed)}")
         if self.invalid:
             shown = ", ".join(self.invalid[:INVALID_SHOWN])
             more = f" и ещё {len(self.invalid) - INVALID_SHOWN}" if len(self.invalid) > INVALID_SHOWN else ""
-            lines.append(f"❌ Некорректных значений: {len(self.invalid)}\n<code>{shown}</code>{more}")
-        lines += ["", f"Всего в мониторинге: <b>{self.total}</b>"]
+            lines.append(f"🚫 Некорректных значений: {len(self.invalid)} (не добавлены)\n<code>{shown}</code>{more}")
+        lines.append(f"📋 Всего в вашем мониторинге: <b>{self.total}</b>")
         return "\n".join(lines)
 
 
@@ -53,27 +54,46 @@ class BotService:
         self.default_time = default_time
         self._manual_running: set[int] = set()
 
+    def _user_time(self, user_id: int) -> str:
+        user = self.store.get_user(user_id)
+        return user.monitor_time if user and user.monitor_time else self.default_time.strftime("%H:%M")
+
+    def _now(self) -> str:
+        return datetime.now(self.tz).strftime("%d.%m.%Y %H:%M")
+
     # --- добавление ---
     def add(self, user_id: int, parsed: ParseResult, labels: dict[str, str] | None = None) -> AddOutcome:
         added, existed = self.store.add_bins(user_id, parsed.valid, labels)
         return AddOutcome(added, existed, parsed.invalid, self.store.count_bins(user_id))
 
-    async def baseline_report(self, user_id: int, bins: list[str]) -> str | None:
-        if not bins:
+    async def baseline_report(self, user_id: int, bins: list[str], existed: list[str] | None = None) -> str | None:
+        """Проверяет только что добавленные БИН, фиксирует их состояние и показывает статус каждого."""
+        existed = existed or []
+        if not bins and not existed:
             return None
-        states, failed = await self.monitor.capture_baseline(user_id, bins)
-        in_registry = [s for s in states.values() if s.found]
-        lines = ["📌 Текущее состояние зафиксировано. Дальше пришлю только изменения."]
-        if in_registry:
-            lines.append(f"\nУже в реестре: <b>{len(in_registry)}</b> из {len(bins)}")
-            for s in in_registry[:INVALID_SHOWN]:
-                lines.append(f"• <code>{s.bin}</code> {escape(short_company(s.company))} — товаров: {len(s.product_names())}")
-            if len(in_registry) > INVALID_SHOWN:
-                lines.append(f"…и ещё {len(in_registry) - INVALID_SHOWN}")
-        else:
-            lines.append(f"\nПока ни одна из {len(bins)} организаций не найдена в реестре — сообщу, когда появится.")
+        states, failed = await self.monitor.capture_baseline(user_id, bins) if bins else ({}, [])
+        subs = {s.bin: s for s in self.store.list_subscriptions(user_id)}
+        lines = [f"📌 <b>Результат проверки</b> · {self._now()}", ""]
+        rows, shown_states = [], []
+        for i, b in enumerate(bins + existed, 1):
+            sub = subs.get(b)
+            label = sub.label if sub else ""
+            if b in states:
+                state = states[b]
+            else:
+                state = sub.snapshot if sub else None
+            shown_states.append(None if b in failed and state is None else state)
+            rows.append(status_line(b, state, label, failed=b in failed, number=i))
+        lines.append(counts_line([s for b, s in zip(bins + existed, shown_states) if b not in failed],
+                                 failed=len(failed)))
+        lines.append("")
+        lines += rows[:REPORT_LIMIT]
+        if len(rows) > REPORT_LIMIT:
+            lines.append(f"…и ещё {len(rows) - REPORT_LIMIT} — полный список в «📋 Мой список».")
         if failed:
-            lines.append(f"\n⚠️ По {len(failed)} БИН портал не ответил — зафиксирую при следующей проверке.")
+            lines += ["", f"{UNKNOWN} Портал не ответил по {len(failed)} БИН — они уже в списке, "
+                          "проверю при следующей автопроверке."]
+        lines += ["", f"🔔 Дальше пишу только когда что-то меняется. Автопроверка — ежедневно в {self._user_time(user_id)}."]
         return "\n".join(lines)
 
     # --- проверка одного БИН ---
@@ -81,20 +101,23 @@ class BotService:
         try:
             state = await self.portal.get_state(bin_, max_age=60)
         except PortalError:
-            return "⚠️ Не удалось получить данные. Попробуйте позже.", False
+            return (f"{UNKNOWN} Не удалось получить данные с портала e-ondiris.gov.kz.\n"
+                    "Попробуйте ещё раз через несколько минут."), False
         return format_card(state), True
 
     async def add_checked(self, user_id: int, bin_: str) -> str:
         added, _ = self.store.add_bins(user_id, [bin_])
         if not added:
             return f"♻️ <code>{bin_}</code> уже есть в вашем списке мониторинга."
+        state = None
         try:
             state = await self.portal.get_state(bin_)
             self.store.save_baseline(user_id, state)
         except PortalError:
             pass
-        return (f"✅ <code>{bin_}</code> добавлен в мониторинг.\n"
-                f"Всего в мониторинге: <b>{self.store.count_bins(user_id)}</b>")
+        return (f"➕ Добавлено в мониторинг:\n{status_line(bin_, state, failed=state is None)}\n\n"
+                f"📋 Всего в вашем мониторинге: <b>{self.store.count_bins(user_id)}</b>\n"
+                f"🔔 Сообщу, когда по нему что-то изменится.")
 
     # --- удаление ---
     def remove(self, user_id: int, text: str) -> str:
@@ -105,12 +128,13 @@ class BotService:
         removed, missing = self.store.remove_bins(user_id, targets)
         if len(targets) == 1:
             if removed:
-                return f"✅ <code>{removed[0]}</code> удалён из вашего списка мониторинга."
+                return (f"🗑 <code>{removed[0]}</code> удалён из вашего списка мониторинга.\n"
+                        f"📋 Осталось в мониторинге: <b>{self.store.count_bins(user_id)}</b>")
             return f"ℹ️ БИН <code>{missing[0]}</code> отсутствует в вашем списке."
-        lines = [f"✅ Удалено: {len(removed)}"]
+        lines = [f"🗑 Удалено из мониторинга: <b>{len(removed)}</b>"]
         if missing:
             lines.append("ℹ️ Не было в списке: " + ", ".join(f"<code>{b}</code>" for b in missing))
-        lines.append(f"\nВсего в мониторинге: <b>{self.store.count_bins(user_id)}</b>")
+        lines.append(f"📋 Осталось в мониторинге: <b>{self.store.count_bins(user_id)}</b>")
         return "\n".join(lines)
 
     # --- список ---
@@ -121,15 +145,16 @@ class BotService:
         pages = (len(subs) + LIST_PAGE_SIZE - 1) // LIST_PAGE_SIZE
         page = max(0, min(page, pages - 1))
         start = page * LIST_PAGE_SIZE
-        in_reg = sum(1 for s in subs if s.snapshot and s.snapshot.found)
-        lines = ["📋 <b>Ваш список мониторинга</b>", f"Всего: {len(subs)} · в реестре: {in_reg}", ""]
+        last = max((s.snapshot_at for s in subs if s.snapshot_at), default=None)
+        lines = [f"📋 <b>Ваш список мониторинга</b> — {len(subs)} {plural(len(subs), 'организация', 'организации', 'организаций')}",
+                 counts_line([s.snapshot for s in subs]), ""]
         for i, s in enumerate(subs[start:start + LIST_PAGE_SIZE], start + 1):
-            mark = "✅" if s.snapshot and s.snapshot.found else "⏳"
-            title = f" — {escape(short_company(s.title))}" if s.title else ""
-            lines.append(f"{i}. {mark} <code>{s.bin}</code>{title}")
+            lines.append(status_line(s.bin, s.snapshot, s.label, number=i))
         if pages > 1:
             lines += ["", f"Страница {page + 1} из {pages}"]
-        lines += ["", "✅ — есть в реестре, ⏳ — пока нет"]
+        if last:
+            lines += ["", f"🕒 Статусы по последней проверке: {local_time(last, self.tz)}",
+                      "Проверить сейчас — кнопка «🔄 Проверить сейчас»."]
         return "\n".join(lines), page, pages
 
     # --- настройки ---
@@ -137,11 +162,14 @@ class BotService:
         user = self.store.get_user(user_id)
         t = user.monitor_time if user and user.monitor_time else self.default_time.strftime("%H:%M")
         notify = user.notify if user else True
+        state = ("🔔 Уведомления: <b>включены</b> — каждый день проверяю ваш список и пишу, если что-то изменилось."
+                 if notify else
+                 "🔕 Уведомления: <b>выключены</b> — автопроверки нет. «🔄 Проверить сейчас» работает как обычно.")
         return (
             "⚙️ <b>Настройки</b>\n\n"
-            f"🕒 Автопроверка: ежедневно в {t} (время Казахстана)\n"
-            f"📊 Организаций: {self.store.count_bins(user_id)}\n"
-            f"🔔 Уведомления: {'включены' if notify else 'выключены'}"
+            f"🕒 Автопроверка: ежедневно в <b>{t}</b> (время Казахстана)\n"
+            f"📋 Организаций в мониторинге: <b>{self.store.count_bins(user_id)}</b>\n"
+            f"{state}"
         )
 
     def set_time(self, user_id: int, text: str) -> str:
@@ -159,11 +187,10 @@ class BotService:
     # --- ручная проверка всего списка ---
     async def run_manual(self, user_id: int) -> str:
         if user_id in self._manual_running:
-            return "⏳ Проверка уже выполняется, дождитесь результата."
+            return "⏳ Проверка уже идёт — дождитесь результата."
         user = self.store.get_user(user_id)
-        count = self.store.count_bins(user_id)
-        if not user or count == 0:
-            return "📋 Ваш список мониторинга пуст. Сначала добавьте БИН."
+        if not user or self.store.count_bins(user_id) == 0:
+            return "📋 Ваш список мониторинга пуст. Сначала добавьте БИН — кнопка «➕ Добавить БИН»."
         self._manual_running.add(user_id)
         try:
             stats = await self.monitor.run([user], label=f"MANUAL {user_id}")
@@ -171,10 +198,25 @@ class BotService:
             self._manual_running.discard(user_id)
         res = stats.per_user.get(user_id)
         if res is None or (res.checked == 0 and res.errors):
-            return "⚠️ Не удалось получить данные. Попробуйте позже."
-        lines = ["✅ <b>Проверка завершена</b>", f"Проверено: {res.checked}", f"Изменений: {len(res.changes)}"]
+            return (f"{UNKNOWN} Не удалось получить данные с портала e-ondiris.gov.kz.\n"
+                    "Список не изменён. Попробуйте ещё раз через несколько минут.")
+        subs = self.store.list_subscriptions(user_id)
+        n = len(res.changes)
+        lines = [f"🔄 <b>Проверка завершена</b> · {self._now()}",
+                 f"Проверено: {res.checked} из {len(subs)}", "",
+                 counts_line([res.states[s.bin] for s in subs if s.bin in res.states], failed=res.errors), ""]
+        if n:
+            lines.append(f"🔔 Изменений с прошлой проверки: <b>{n}</b> — подробности в сообщении выше.")
+        else:
+            lines.append("🔕 Изменений с прошлой проверки нет.")
+        lines.append("")
+        rows = [status_line(s.bin, res.states.get(s.bin, s.snapshot), s.label,
+                            failed=s.bin in res.failed, number=i) for i, s in enumerate(subs, 1)]
+        lines += rows[:REPORT_LIMIT]
+        if len(rows) > REPORT_LIMIT:
+            lines.append(f"…и ещё {len(rows) - REPORT_LIMIT} — полный список в «📋 Мой список».")
         if res.errors:
-            lines.append(f"⚠️ Не удалось проверить: {res.errors} — попробуйте позже.")
+            lines += ["", f"{UNKNOWN} По {res.errors} БИН портал не ответил — попробуйте позже."]
         return "\n".join(lines)
 
     # --- расписание ---

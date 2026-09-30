@@ -28,11 +28,11 @@ def test_add_single_and_isolation_and_remove(env):
 
     assert "удалён" in env.service.remove(A, BIN2) or "отсутствует" in env.service.remove(A, BIN2)
     assert [s.bin for s in env.store.list_subscriptions(B)] == [BIN2, BIN3]
-    assert "✅" in env.service.remove(A, f"/remove {BIN1}")
+    assert "удалён из вашего списка" in env.service.remove(A, f"/remove {BIN1}")
     assert env.store.count_bins(A) == 0
     assert "отсутствует" in env.service.remove(A, BIN1)
     msg = env.service.remove(B, f"{BIN2} {BIN3} {BIN1}")
-    assert "Удалено: 2" in msg and BIN1 in msg
+    assert "Удалено из мониторинга: <b>2</b>" in msg and BIN1 in msg
 
 
 def test_add_reports_existing_and_invalid(env):
@@ -40,8 +40,8 @@ def test_add_reports_existing_and_invalid(env):
     out = env.service.add(A, parse_text(f"{BIN1} {BIN2} 123456789012"))
     assert out.added == [BIN2] and out.existed == [BIN1] and out.invalid == ["123456789012"]
     text = out.text()
-    assert "Добавлено: <b>1</b>" in text and "Уже были в списке: 1" in text and "Некорректных значений: 1" in text
-    assert "Всего в мониторинге: <b>2</b>" in text
+    assert "Добавлено в мониторинг: <b>1</b>" in text and "Уже были в вашем списке: 1" in text
+    assert "Некорректных значений: 1" in text and "Всего в вашем мониторинге: <b>2</b>" in text
 
 
 # 11 — baseline: уже существующие записи не приходят как «новые»
@@ -70,7 +70,8 @@ def test_new_product_notified_once(env):
     stats = daily(env, A)
     assert stats.changed == 1 and stats.notifications == 1
     msg = env.sent.to(A)[0]
-    assert "ОБНАРУЖЕНО ИЗМЕНЕНИЕ" in msg and "Новый товар" in msg and "Кабель силовой" in msg
+    assert "ОБНАРУЖЕНО ИЗМЕНЕНИЕ" in msg and "Новые записи: 1" in msg and "Кабель силовой" in msg
+    assert "Сейчас в реестре: 2 записи" in msg
     assert "Трубы стальные" not in msg and BIN1 in msg and "Проверка:" in msg
     # 16 — повторный запуск не дублирует уведомление
     daily(env, A)
@@ -92,7 +93,7 @@ def test_removed_product_and_rename(env):
     env.portal.set(org(BIN1, "ТОО \"Новое\"", {"code:1": "Трубы"}))
     daily(env, A)
     msg = env.sent.to(A)[0]
-    assert "Исключён товар" in msg and "Арматура" in msg and "было: ТОО «Старое»" in msg
+    assert "Удалены записи: 1" in msg and "Арматура" in msg and "Было: ТОО «Старое»" in msg
 
 
 # 14 — порядок товаров / перерегистрация не считаются изменением
@@ -131,7 +132,7 @@ def test_disappearance_requires_confirmation(env):
     del env.portal.states[BIN1]
     stats = daily(env, A)
     assert env.portal.calls.count(BIN1) >= 3  # baseline + запрос + подтверждение
-    assert stats.changed == 1 and "Больше не найдена" in env.sent.to(A)[0]
+    assert stats.changed == 1 and "Исчезла из реестра" in env.sent.to(A)[0]
 
 
 # 9, 19 — один БИН у двух пользователей: один запрос, независимые снимки
@@ -155,7 +156,7 @@ def test_changes_grouped_into_one_message(env):
         env.portal.set(org(b))
     stats = daily(env, A)
     assert stats.changed == 5 and len(env.sent.to(A)) == 1
-    assert "ОБНАРУЖЕНЫ ИЗМЕНЕНИЯ (5)" in env.sent.to(A)[0]
+    assert "ОБНАРУЖЕНЫ ИЗМЕНЕНИЯ</b> — организаций: 5" in env.sent.to(A)[0]
 
 
 def test_many_changes_split_by_telegram_limit(env):
@@ -179,7 +180,7 @@ def test_restart_persistence(env):
     store = Storage(env.db)
     assert [s.bin for s in store.list_subscriptions(A)] == [BIN1]
     assert [s.bin for s in store.list_subscriptions(B)] == [BIN2]
-    assert store.list_subscriptions(A)[0].snapshot.products == {"code:1": "Трубы"}
+    assert store.list_subscriptions(A)[0].snapshot.records == {"code:1": ("Трубы", True)}
     assert store.get_user(A).monitor_time == "09:30"
     store.close()
     env.store = Storage(env.db)
@@ -224,23 +225,26 @@ def test_manual_run_summary(env):
     env.portal.set(org(BIN1))
     add(env, A, BIN1, BIN2)
     text = run(env.service.run_manual(A))
-    assert "Проверка завершена" in text and "Проверено: 2" in text and "Изменений: 0" in text
+    assert "Проверка завершена" in text and "Проверено: 2 из 2" in text and "Изменений с прошлой проверки нет" in text
+    assert f"✅ <code>{BIN1}</code>" in text and f"❌ <code>{BIN2}</code>" in text
+    assert "В реестре: <b>1</b>" in text and "Нет в реестре: <b>1</b>" in text
 
 
 def test_check_one_card(env):
     env.portal.set(org(BIN1, "Товарищество с ограниченной ответственностью \"Пример\"",
                        {"code:1": "Трубы стальные", "code:2": "Арматура"}))
     text, ok = run(env.service.check_one(BIN1))
-    assert ok and "ТОО «Пример»" in text and BIN1 in text and "Трубы стальные" in text
+    assert ok and "ЕСТЬ В РЕЕСТРЕ" in text and "ТОО «Пример»" in text and BIN1 in text and "Трубы стальные" in text
+    assert "Записей в реестре: <b>2 записи</b>" in text
     assert "product_code" not in text
     text, ok = run(env.service.check_one(BIN2))
-    assert ok and "не найден" in text
+    assert ok and "НЕТ В РЕЕСТРЕ" in text
 
 
 def test_add_checked_uses_baseline(env):
     env.user(A)
     env.portal.set(org(BIN1))
-    assert "добавлен" in run(env.service.add_checked(A, BIN1))
+    assert "Добавлено в мониторинг" in run(env.service.add_checked(A, BIN1))
     assert env.store.list_subscriptions(A)[0].snapshot is not None
     assert "уже есть" in run(env.service.add_checked(A, BIN1))
 
@@ -248,9 +252,9 @@ def test_add_checked_uses_baseline(env):
 def test_list_pagination(env):
     add(env, A, *gen_bins(65, 300))
     text, page, pages = env.service.list_page(A, 0)
-    assert pages == 3 and "Всего: 65" in text and "1. " in text and "31. " not in text
+    assert pages == 3 and "65 организаций" in text and "\n1. " in text and "\n31. " not in text
     text, page, _ = env.service.list_page(A, 2)
-    assert "61. " in text and page == 2
+    assert "\n61. " in text and page == 2
 
 
 def test_notifications_disabled_skips_schedule(env):
@@ -310,5 +314,57 @@ def test_legacy_state_migration(env, tmp_path):
 
 
 def test_state_json_roundtrip():
-    s = OrgState("181240006529", True, "ТОО", {"code:1": "A"})
+    s = OrgState("181240006529", True, "ТОО", {"k": ("A", False)}, total=1)
     assert OrgState.from_json(s.to_json()) == s
+
+
+def test_old_format_snapshot_replaced_silently(env):
+    import json
+
+    env.user(A)
+    env.store.add_bins(A, [BIN1])
+    old = json.dumps({"bin": BIN1, "found": True, "company": "ТОО", "products": {"code:1": "Трубы"}})
+    env.store.conn.execute("UPDATE subscriptions SET snapshot = ? WHERE user_id = ?", (old, A))
+    env.portal.set(org(BIN1, products={f"k{i}": f"Товар {i}" for i in range(50)}))
+    assert daily(env, A).changed == 0 and env.sent.messages == []
+    assert env.store.list_subscriptions(A)[0].snapshot.total == 50
+    env.portal.set(org(BIN1, products={f"k{i}": f"Товар {i}" for i in range(51)}))
+    assert daily(env, A).changed == 1 and "Новые записи: 1" in env.sent.to(A)[0]
+
+
+def test_record_became_inactive(env):
+    env.portal.set(org(BIN1, products={"k1": "Трубы", "k2": "Кабель"}))
+    add(env, A, BIN1)
+    env.portal.set(org(BIN1, products={"k1": "Трубы", "k2": "Кабель"}, inactive={"k2"}))
+    daily(env, A)
+    msg = env.sent.to(A)[0]
+    assert "Стали неактивными: 1" in msg and "2 записи (активных: 1)" in msg
+
+
+def test_readding_shows_status_of_existing(env):
+    env.portal.set(org(BIN1))
+    add(env, A, BIN1)
+    out = env.service.add(A, parse_text(f"{BIN1} {BIN2}"))
+    report = run(env.service.baseline_report(A, out.added, out.existed))
+    assert f"✅ <code>{BIN1}</code>" in report and f"❌ <code>{BIN2}</code>" in report
+    assert "В реестре: <b>1</b>" in report and "Нет в реестре: <b>1</b>" in report
+
+
+def test_list_shows_statuses_and_last_check_time(env):
+    env.portal.set(org(BIN1))
+    add(env, A, BIN1, BIN2)
+    env.user(A)
+    env.store.add_bins(A, [BIN3])
+    text, _, _ = env.service.list_page(A, 0)
+    assert f"✅ <code>{BIN1}</code>" in text and f"❌ <code>{BIN2}</code>" in text
+    assert f"⏳ <code>{BIN3}</code>" in text and "ещё не проверялся" in text
+    assert "Статусы по последней проверке:" in text
+
+
+def test_manual_run_marks_failed_bins(env):
+    env.portal.set(org(BIN1))
+    add(env, A, BIN1, BIN2)
+    env.portal.fail.add(BIN2)
+    text = run(env.service.run_manual(A))
+    assert f"⚠️ <code>{BIN2}</code>" in text and "по прошлой проверке: нет в реестре" in text
+    assert f"✅ <code>{BIN1}</code>" in text

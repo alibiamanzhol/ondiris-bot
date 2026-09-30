@@ -112,3 +112,40 @@ def test_excel_xls():
 def test_csv_semicolon():
     data = "Название;БИН\nАльфа;181240006529\nБета;1.81240006529E+11\n".encode("cp1251")
     assert parse_document(data, "list.csv").valid == ["181240006529"]
+
+
+def _make_pdf(lines: list[str]) -> bytes:
+    """Минимальный PDF с текстовым слоем (без сторонних библиотек)."""
+    content = "BT /F1 12 Tf 50 750 Td 14 TL " + " ".join(f"({t}) '" for t in lines) + " ET"
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R "
+        "/Resources << /Font << /F1 5 0 R >> >> >>",
+        f"<< /Length {len(content)} >>\nstream\n{content}\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    ]
+    out, offsets = b"%PDF-1.4\n", []
+    for i, body in enumerate(objs, 1):
+        offsets.append(len(out))
+        out += f"{i} 0 obj\n{body}\nendobj\n".encode("latin-1")
+    xref = len(out)
+    out += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    out += "".join(f"{o:010d} 00000 n \n" for o in offsets).encode()
+    out += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF".encode()
+    return out
+
+
+def test_pdf_text():
+    pdf = _make_pdf(["Company A  BIN 181240006529", "Company B: 971240001315; phone +77076400331",
+                     "invalid 123456789012"])
+    r = parse_document(pdf, "list.pdf")
+    assert r.valid == ["181240006529", "971240001315"] and r.invalid == ["123456789012"]
+
+
+def test_pdf_without_text_layer():
+    import pytest
+
+    from ondiris_bot.bins import UnsupportedFile
+    with pytest.raises(UnsupportedFile, match="скан"):
+        parse_document(_make_pdf([]), "scan.pdf")

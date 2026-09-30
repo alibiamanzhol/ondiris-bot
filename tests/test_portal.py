@@ -37,23 +37,30 @@ def client(handler):
     return PortalClient(URL, transport=httpx.MockTransport(handler), retry_delays=(0, 0))
 
 
-def test_all_pages_collected_and_normalized():
-    rows = [row(i) for i in range(250)] + [row(999, active=False)]
+def test_all_pages_collected_like_site():
+    # Как на сайте: считаются все строки реестра по БИН, включая неактивные.
+    rows = [row(i) for i in range(250)] + [row(i, active=False) for i in range(1000, 1010)]
     state = run(client(paged(rows)).get_state(BIN))
-    assert state.found and len(state.products) == 250
+    assert state.found and state.total == 260 and len(state.records) == 260 and state.active == 250
     assert state.company.endswith("\"Торг-Партнер\"")
-    assert "Товар 999" not in state.products.values()
+
+
+def test_same_code_under_different_registration_numbers_counted_separately():
+    rows = [row(1), {**row(1), "registration_number": "110 5 00048", "is_active": False}]
+    state = run(client(paged(rows)).get_state(BIN))
+    assert state.total == 2 and len(state.records) == 2 and state.active == 1
+    assert state.product_names() == ["Товар 1"]
 
 
 def test_not_found():
     state = run(client(paged([])).get_state(BIN))
-    assert not state.found and state.products == {}
+    assert not state.found and state.records == {} and state.total == 0
 
 
 def test_other_bins_filtered_out():
     rows = [row(1), {**row(2), "bin_iin": "971240001315"}]
     state = run(client(paged(rows)).get_state(BIN))
-    assert list(state.products.values()) == ["Товар 1"]
+    assert state.product_names() == ["Товар 1"]
 
 
 @pytest.mark.parametrize("response", [

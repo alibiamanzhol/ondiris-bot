@@ -30,9 +30,12 @@ def gen_bins(n: int, start: int = 1) -> list[str]:
     return out
 
 
-def org(bin_: str, company: str = "", products: dict | None = None) -> OrgState:
+def org(bin_: str, company: str = "", products: dict | None = None, inactive: set | None = None) -> OrgState:
+    """products: ключ записи -> наименование; inactive — ключи неактивных записей."""
+    products = products if products is not None else {"code:1": "Товар 1"}
+    inactive = inactive or set()
     return OrgState(bin=bin_, found=True, company=company or f"ТОО \"Компания {bin_[-4:]}\"",
-                    products=products if products is not None else {"code:1": "Товар 1"})
+                    records={k: (v, k not in inactive) for k, v in products.items()}, total=len(products))
 
 
 class FakePortal:

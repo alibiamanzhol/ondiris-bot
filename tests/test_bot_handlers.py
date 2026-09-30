@@ -106,7 +106,7 @@ def test_full_user_flow(tmp_path):
         async with Harness(tmp_path) as h:
             h.portal.set(org(BIN1, "ТОО \"Пример\"", {"code:1": "Трубы стальные"}))
             await h.text(10, "/start")
-            assert "Добавьте один или несколько БИН" in h.last(10)
+            assert "Как это работает" in h.last(10)
             start_markup = [p for n, p in h.tg.calls if n == "sendMessage"][-1]["reply_markup"]
             assert BTN_ADD in str(start_markup) and BTN_RUN in str(start_markup)
 
@@ -114,20 +114,24 @@ def test_full_user_flow(tmp_path):
             assert "Отправьте БИН/ИИН" in h.last(10)
             await h.text(10, f"{BIN1}, {BIN2}; 123456789012")
             texts = h.tg.texts(10)
-            assert any("Добавлено: <b>2</b>" in t and "Некорректных значений: 1" in t for t in texts)
-            assert "Текущее состояние зафиксировано" in h.last(10) and "Уже в реестре: <b>1</b>" in h.last(10)
+            assert any("Добавлено в мониторинг: <b>2</b>" in t and "Некорректных значений: 1" in t for t in texts)
+            report = h.last(10)
+            assert "Результат проверки" in report and "В реестре: <b>1</b>" in report and "Нет в реестре: <b>1</b>" in report
+            assert f"✅ <code>{BIN1}</code>" in report and f"❌ <code>{BIN2}</code>" in report
 
             await h.text(10, BTN_CHECK)
             await h.text(10, BIN1)
-            assert "ТОО «Пример»" in h.last(10) and "уже в вашем списке" in h.last(10)
+            assert "ТОО «Пример»" in h.last(10) and "уже в вашем мониторинге" in h.last(10)
 
             await h.text(10, BIN3)  # один БИН без режима — быстрая проверка
-            assert "не найден" in h.last(10)
+            assert "НЕТ В РЕЕСТРЕ" in h.last(10)
             await h.press(10, f"add:{BIN3}")
-            assert "добавлен в мониторинг" in h.last(10)
+            assert "Добавлено в мониторинг" in h.last(10) and f"❌ <code>{BIN3}</code>" in h.last(10)
 
             await h.text(10, BTN_LIST)
-            assert "Всего: 3" in h.last(10) and "ТОО «Пример»" in h.last(10)
+            listing = h.last(10)
+            assert "3 организации" in listing and "ТОО «Пример»" in listing
+            assert f"✅ <code>{BIN1}</code>" in listing and f"❌ <code>{BIN3}</code>" in listing
 
             await h.text(10, BTN_REMOVE)
             await h.text(10, BIN2)
@@ -136,10 +140,11 @@ def test_full_user_flow(tmp_path):
             assert "отсутствует" in h.last(10)
 
             await h.text(10, BTN_RUN)
-            assert "Проверка завершена" in h.last(10) and "Проверено: 2" in h.last(10)
+            assert "Проверка завершена" in h.last(10) and "Проверено: 2 из 2" in h.last(10)
+            assert "Изменений с прошлой проверки нет" in h.last(10) and f"✅ <code>{BIN1}</code>" in h.last(10)
 
             await h.text(10, BTN_SETTINGS)
-            assert "Автопроверка: ежедневно в 18:00" in h.last(10) and "Организаций: 2" in h.last(10)
+            assert "Автопроверка: ежедневно в <b>18:00</b>" in h.last(10) and "Организаций в мониторинге: <b>2</b>" in h.last(10)
             await h.press(10, "settings:time")
             await h.text(10, "9:30")
             assert "09:30" in h.last(10)
@@ -150,7 +155,7 @@ def test_full_user_flow(tmp_path):
             await h.text(20, "/list")
             assert "пуст" in h.last(20)
             await h.text(20, f"{BIN1} {BIN2}")  # несколько БИН без режима — добавление
-            assert any("Добавлено: <b>2</b>" in t for t in h.tg.texts(20))
+            assert any("Добавлено в мониторинг: <b>2</b>" in t for t in h.tg.texts(20))
             assert [s.bin for s in h.store.list_subscriptions(10)] == [BIN1, BIN3]
     run(scenario())
 
@@ -168,7 +173,7 @@ def test_excel_upload(tmp_path):
     async def scenario():
         async with Harness(tmp_path) as h:
             await h.document(10, "list.xlsx", buf.getvalue())
-            assert any("Добавлено: <b>2</b>" in t for t in h.tg.texts(10))
+            assert any("Добавлено в мониторинг: <b>2</b>" in t for t in h.tg.texts(10))
             await h.document(10, "virus.exe", b"MZ")
             assert "Поддерживаются файлы Excel" in h.last(10)
     run(scenario())
@@ -182,7 +187,7 @@ def test_whitelist(tmp_path):
             await h.text(99, BIN1)
             assert h.store.get_user(99) is None
             await h.text(10, "/start")
-            assert "Добавьте" in h.last(10)
+            assert "Как это работает" in h.last(10)
     run(scenario())
 
 
@@ -191,13 +196,13 @@ def test_commands_with_args(tmp_path):
         async with Harness(tmp_path) as h:
             h.portal.set(org(BIN1))
             await h.text(10, f"/add {BIN1} {BIN2}")
-            assert any("Добавлено: <b>2</b>" in t for t in h.tg.texts(10))
+            assert any("Добавлено в мониторинг: <b>2</b>" in t for t in h.tg.texts(10))
             await h.text(10, f"/check {BIN1}")
-            assert "Найден в реестре" in h.last(10)
+            assert "ЕСТЬ В РЕЕСТРЕ" in h.last(10)
             await h.text(10, "/check")
             assert "Проверка завершена" in h.last(10)
             await h.text(10, f"/remove {BIN1} {BIN2}")
-            assert "Удалено: 2" in h.last(10)
+            assert "Удалено из мониторинга: <b>2</b>" in h.last(10)
             await h.text(10, "привет")
-            assert "Выберите действие" in h.last(10)
+            assert "Не нашёл в сообщении БИН" in h.last(10)
     run(scenario())

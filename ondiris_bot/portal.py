@@ -75,10 +75,8 @@ class PortalClient:
             page += 1
             if page > MAX_PAGES:
                 raise PortalError("слишком много страниц")
-        return [
-            r for r in rows
-            if str(r.get("bin_iin") or "").strip() == bin_ and r.get("is_active") is not False
-        ]
+        # Как на сайте: все строки по БИН, включая неактивные (признак активности хранится в снимке).
+        return [r for r in rows if str(r.get("bin_iin") or "").strip() == bin_]
 
     async def get_state(self, bin_: str, max_age: float | None = None) -> OrgState:
         max_age = self._cache_ttl if max_age is None else max_age

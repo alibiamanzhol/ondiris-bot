@@ -33,29 +33,34 @@ MAIN_MENU = ReplyKeyboardMarkup(
 )
 
 WELCOME = (
-    "👋 Бот отслеживает организации в <b>Реестре казахстанских товаропроизводителей</b> (e-ondiris.gov.kz).\n\n"
-    "Добавьте один или несколько БИН — я буду проверять их каждый день в {time} "
-    "и напишу, только когда появятся новые данные: организация попала в реестр, "
-    "у неё появился новый товар и т. п.\n\n"
-    "<b>Как пользоваться:</b>\n"
-    f"{BTN_ADD} — добавить организации в мониторинг (можно списком или Excel-файлом)\n"
-    f"{BTN_CHECK} — сразу посмотреть данные по одному БИН\n"
-    f"{BTN_LIST} — что сейчас отслеживается\n"
+    "👋 Я слежу за организациями в <b>Реестре казахстанских товаропроизводителей</b> (e-ondiris.gov.kz).\n\n"
+    "<b>Как это работает</b>\n"
+    "1. Вы добавляете БИН — я сразу проверяю каждый и показываю статус:\n"
+    "   ✅ есть в реестре · ❌ нет в реестре\n"
+    "2. Каждый день в {time} я проверяю весь ваш список.\n"
+    "3. Пишу только если что-то изменилось: организация появилась в реестре, "
+    "появились новые записи о товарах или записи удалены. Нет изменений — не беспокою.\n\n"
+    "<b>Кнопки</b>\n"
+    f"{BTN_ADD} — добавить в мониторинг (текстом, списком, Excel, CSV или PDF)\n"
+    f"{BTN_CHECK} — посмотреть данные по одному БИН прямо сейчас\n"
+    f"{BTN_LIST} — ваш список со статусами ✅/❌\n"
     f"{BTN_REMOVE} — убрать из мониторинга\n"
-    f"{BTN_RUN} — проверить весь список прямо сейчас\n\n"
+    f"{BTN_RUN} — проверить весь список сейчас и показать статус каждого\n"
+    f"{BTN_SETTINGS} — время автопроверки и уведомления\n\n"
     "💡 Можно просто отправить БИН в чат: один — покажу данные, несколько — добавлю в мониторинг."
 )
 
 ADD_PROMPT = (
-    "Отправьте БИН/ИИН организаций.\n\n"
-    "Можно отправить:\n"
+    "Отправьте БИН/ИИН организаций (12 цифр).\n\n"
+    "Подойдёт любой вариант:\n"
     "• один БИН;\n"
-    "• несколько БИН — через пробел, запятую, точку с запятой или с новой строки;\n"
-    "• вставить таблицу (лишний текст я пропущу);\n"
-    "• отправить Excel-файл (.xlsx, .xls) или .csv — БИН могут быть в любом столбце."
+    "• несколько — через пробел, запятую, точку с запятой или с новой строки;\n"
+    "• таблица, скопированная из Excel или письма (лишний текст я пропущу);\n"
+    "• файл Excel (.xlsx, .xls), .csv или PDF — БИН могут быть в любом месте файла.\n\n"
+    "После добавления я сразу проверю каждый БИН и покажу статус ✅/❌."
 )
-CHECK_PROMPT = "Отправьте БИН/ИИН, и я покажу актуальные данные из реестра."
-REMOVE_PROMPT = "Отправьте БИН, который нужно удалить из мониторинга. Можно несколько сразу."
+CHECK_PROMPT = "Отправьте один БИН/ИИН — покажу, есть ли организация в реестре и какие у неё товары."
+REMOVE_PROMPT = "Отправьте БИН, который нужно убрать из мониторинга. Можно несколько сразу."
 TIME_PROMPT = "Отправьте время ежедневной проверки в формате ЧЧ:ММ, например <code>09:30</code>."
 
 MODE_ADD, MODE_CHECK, MODE_REMOVE, MODE_TIME = "add", "check", "remove", "time"
@@ -175,15 +180,15 @@ async def _finish_add(update, context, parsed, labels=None) -> None:
     user_id = update.effective_user.id
     outcome = svc.add(user_id, parsed, labels)
     text = outcome.text()
-    if outcome.added:
-        text += "\n\n⏳ Фиксирую текущее состояние в реестре…"
+    if outcome.added or outcome.existed:
+        text += "\n\n⏳ Проверяю статус в реестре…"
     await _reply(update, text, MAIN_MENU)
-    if outcome.added:
+    if outcome.added or outcome.existed:
         chat_id = update.effective_chat.id
 
         async def baseline():
             try:
-                report = await svc.baseline_report(user_id, outcome.added)
+                report = await svc.baseline_report(user_id, outcome.added, outcome.existed)
                 if report:
                     for part in split_long(report):
                         await context.bot.send_message(chat_id, part, parse_mode=ParseMode.HTML)
@@ -213,7 +218,7 @@ async def show_bin(update: Update, context: ContextTypes.DEFAULT_TYPE, bin_: str
     markup = MAIN_MENU
     if ok:
         if svc.store.has_bin(update.effective_user.id, bin_):
-            text += "\n\n📌 Этот БИН уже в вашем списке мониторинга."
+            text += "\n\n📌 Этот БИН уже в вашем мониторинге."
         else:
             markup = InlineKeyboardMarkup([[InlineKeyboardButton("➕ Добавить этот БИН в мониторинг",
                                                                  callback_data=f"add:{bin_}")]])
@@ -224,7 +229,7 @@ async def do_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     svc = _svc(context)
     user_id = update.effective_user.id
     if svc.store.count_bins(user_id):
-        await _reply(update, f"🔄 Проверяю ваш список ({svc.store.count_bins(user_id)})… Это может занять пару минут.")
+        await _reply(update, f"🔄 Проверяю ваш список — {svc.store.count_bins(user_id)} БИН… Обычно это занимает до пары минут.")
     await _reply(update, await svc.run_manual(user_id), MAIN_MENU)
 
 
@@ -319,7 +324,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         elif len(parsed.valid) > 1:
             await do_add(update, context, text)
         else:
-            await _reply(update, "Не понял сообщение. Выберите действие на клавиатуре ниже 👇", MAIN_MENU)
+            await _reply(update, "Не нашёл в сообщении БИН (12 цифр). Выберите действие на кнопках ниже 👇", MAIN_MENU)
 
 
 async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -328,7 +333,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     doc = update.effective_message.document
     name = doc.file_name or ""
     if not name.lower().endswith(SUPPORTED_EXTENSIONS):
-        await _reply(update, "Поддерживаются файлы Excel (.xlsx, .xls), .csv и .txt.", MAIN_MENU)
+        await _reply(update, "Поддерживаются файлы Excel (.xlsx, .xls), .csv, .txt и PDF.", MAIN_MENU)
         return
     mode = context.user_data.pop("mode", None)
     await update.effective_chat.send_action("typing")
@@ -340,7 +345,7 @@ async def on_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     except Exception:
         log.exception("[FILE] cannot parse %s", name)
-        await _reply(update, "❌ Не удалось прочитать файл. Проверьте, что он не повреждён и не защищён паролем.",
+        await _reply(update, "❌ Не удалось прочитать файл. Проверьте, что он открывается и не защищён паролем.",
                      MAIN_MENU)
         return
     if mode == MODE_REMOVE:
