@@ -44,7 +44,10 @@ def fetch_rows(bin_: str) -> list[dict]:
     rows = data.get("data") if isinstance(data, dict) else data
     if not isinstance(rows, list):
         raise ValueError(f"Неожиданный ответ API: {str(data)[:200]}")
-    return [r for r in rows if str(r.get("bin_iin") or r.get("bin") or "").strip() == bin_]
+    return [
+        r for r in rows
+        if str(r.get("bin_iin") or r.get("bin") or "").strip() == bin_ and r.get("is_active") is not False
+    ]
 
 
 def describe(rows: list[dict]) -> tuple[str, list[str]]:
@@ -58,10 +61,13 @@ def describe(rows: list[dict]) -> tuple[str, list[str]]:
 
 
 def main() -> int:
+    if not os.getenv("TELEGRAM_BOT_TOKEN"):
+        print("Telegram: секрет TELEGRAM_BOT_TOKEN не задан")
     try:
         process_inbox()
     except Exception as e:
-        print(f"Не удалось обработать сообщения Telegram: {e}", file=sys.stderr)
+        print(f"Telegram: не удалось обработать сообщения: {e}")
+    print(f"Telegram: владелец {load_state().get('owner_chat_id') or 'не назначен'}")
 
     if DEBUG:
         rows = fetch_rows(SELFTEST_BIN)
