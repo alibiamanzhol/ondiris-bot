@@ -1,78 +1,60 @@
 import html
+import json
 import os
-import re
 import sys
+import time
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-
-from playwright.sync_api import TimeoutError as PWTimeout
-from playwright.sync_api import sync_playwright
 
 from inbox import load_bins, load_state, process_inbox, save_state, send_telegram
 
 ROOT = Path(__file__).parent
 DEBUG_DIR = ROOT / "debug"
 
-REGISTRY_URL = os.getenv("REGISTRY_URL") or "https://e-ondiris.gov.kz"
-SEARCH_SELECTOR = os.getenv("SEARCH_SELECTOR") or (
-    "input[type=search], input[placeholder*='БИН' i], input[placeholder*='поиск' i], input[type=text]"
-)
-RESULT_SELECTOR = os.getenv("RESULT_SELECTOR") or "table tbody tr, [role=row], .ant-table-row"
+SITE_URL = "https://e-ondiris.gov.kz"
+API_URL = os.getenv("REGISTRY_API_URL") or f"{SITE_URL}/awp-api/registry-front"
 DEBUG = os.getenv("DEBUG", "") == "1"
+SELFTEST_BIN = "181240006529"
 
 ASTANA = timezone(timedelta(hours=5))
 
 
-def snapshot(page, name: str) -> None:
-    if not DEBUG:
-        return
-    DEBUG_DIR.mkdir(exist_ok=True)
-    try:
-        page.screenshot(path=str(DEBUG_DIR / f"{name}.png"), full_page=True)
-        (DEBUG_DIR / f"{name}.html").write_text(page.content(), encoding="utf-8")
-    except Exception as e:
-        (DEBUG_DIR / f"{name}.error.txt").write_text(repr(e), encoding="utf-8")
-
-
-def recon(page) -> None:
-    DEBUG_DIR.mkdir(exist_ok=True)
-    log = []
-    page.on("response", lambda r: log.append(f"{r.status} {r.request.method} {r.url}"))
-    page.on("requestfailed", lambda r: log.append(f"FAILED {r.method} {r.url} {r.failure}"))
-    page.on("console", lambda m: log.append(f"CONSOLE {m.type}: {m.text[:300]}"))
-    try:
-        page.goto(REGISTRY_URL, wait_until="domcontentloaded", timeout=60_000)
-    except Exception as e:
-        log.append(f"GOTO ERROR {e!r}")
-    page.wait_for_timeout(20_000)
-    snapshot(page, "start")
-    for path in ["/env-config.js", *re.findall(r'src="(/assets/[^"]+\.js)"', page.content())]:
+def fetch_rows(bin_: str) -> list[dict]:
+    query = urllib.parse.urlencode({"page": 1, "limit": 100, "bin_iin": bin_})
+    req = urllib.request.Request(
+        f"{API_URL}?{query}",
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json", "Referer": SITE_URL + "/"},
+    )
+    last_error = None
+    for attempt in range(3):
         try:
-            body = page.request.get(REGISTRY_URL.rstrip("/") + path, timeout=60_000).text()
-            (DEBUG_DIR / path.strip("/").replace("/", "_")).write_text(body, encoding="utf-8")
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+            break
         except Exception as e:
-            log.append(f"ASSET ERROR {path} {e!r}")
-    (DEBUG_DIR / "network.txt").write_text("\n".join(log), encoding="utf-8")
+            last_error = e
+            time.sleep(5 * (attempt + 1))
+    else:
+        raise last_error
+    if DEBUG:
+        DEBUG_DIR.mkdir(exist_ok=True)
+        (DEBUG_DIR / f"{bin_}.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    rows = data.get("data") if isinstance(data, dict) else data
+    if not isinstance(rows, list):
+        raise ValueError(f"Неожиданный ответ API: {str(data)[:200]}")
+    return [r for r in rows if str(r.get("bin_iin") or r.get("bin") or "").strip() == bin_]
 
 
-def check_bin(page, bin_: str) -> tuple[bool, str]:
-    page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60_000)
-    search = page.locator(SEARCH_SELECTOR).first
-    search.wait_for(state="visible", timeout=30_000)
-    search.fill(bin_)
-    search.press("Enter")
-    try:
-        page.wait_for_load_state("networkidle", timeout=30_000)
-    except PWTimeout:
-        pass
-    page.wait_for_timeout(2_000)
-    snapshot(page, bin_)
-
-    for row in page.locator(RESULT_SELECTOR).all():
-        text = row.inner_text()
-        if bin_ in re.sub(r"\s", "", text):
-            return True, " ".join(text.split())[:300]
-    return False, ""
+def describe(rows: list[dict]) -> tuple[str, list[str]]:
+    company = next((r.get("company_name") for r in rows if r.get("company_name")), "")
+    products = []
+    for r in rows:
+        p = r.get("product_name") or r.get("name")
+        if p and p != "—" and p not in products:
+            products.append(p)
+    return company, products
 
 
 def main() -> int:
@@ -80,40 +62,41 @@ def main() -> int:
         process_inbox()
     except Exception as e:
         print(f"Не удалось обработать сообщения Telegram: {e}", file=sys.stderr)
+
+    if DEBUG:
+        rows = fetch_rows(SELFTEST_BIN)
+        print(f"Самопроверка {SELFTEST_BIN}: найдено строк {len(rows)}, {describe(rows)[0]}")
+
     bins = load_bins()
     state = load_state()
     now = datetime.now(ASTANA).strftime("%d.%m.%Y %H:%M")
     newly_found, errors = [], []
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch()
-        page = browser.new_page(locale="ru-RU")
-        if DEBUG:
-            recon(page)
-        for bin_, name in bins.items():
-            if bin_ in state["found"]:
-                continue
-            try:
-                found, row_text = check_bin(page, bin_)
-            except Exception as e:
-                snapshot(page, f"{bin_}.error")
-                errors.append(f"{bin_}: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
-                continue
-            print(f"{bin_} {name}: {'НАЙДЕН' if found else 'нет'}")
-            if found:
-                state["found"][bin_] = {"name": name, "date": now, "row": row_text}
-                newly_found.append((bin_, name, row_text))
-        browser.close()
+    for bin_, name in bins.items():
+        if bin_ in state["found"]:
+            continue
+        try:
+            rows = fetch_rows(bin_)
+        except Exception as e:
+            errors.append(f"{bin_}: {type(e).__name__}: {str(e).splitlines()[0][:200] if str(e) else ''}")
+            continue
+        print(f"{bin_} {name}: {'НАЙДЕН' if rows else 'нет'}")
+        if rows:
+            company, products = describe(rows)
+            state["found"][bin_] = {"name": name or company, "company": company, "date": now, "products": products}
+            newly_found.append((bin_, name or company, products))
+        time.sleep(1)
 
     save_state(state)
 
     if newly_found:
-        lines = [f"✅ <b>Появились в реестре товаропроизводителей</b> ({now}):", ""]
-        for bin_, name, row_text in newly_found:
+        lines = [f"✅ <b>Появились в реестре казахстанских товаропроизводителей</b> ({now}):", ""]
+        for bin_, name, products in newly_found:
             lines.append(f"• <b>{bin_}</b> {html.escape(name)}".rstrip())
-            if row_text:
-                lines.append(f"  <i>{html.escape(row_text)}</i>")
-        lines += ["", REGISTRY_URL]
+            if products:
+                shown = ", ".join(products[:5]) + (f" и ещё {len(products) - 5}" if len(products) > 5 else "")
+                lines.append(f"  Товары: <i>{html.escape(shown)}</i>")
+        lines += ["", SITE_URL]
         send_telegram("\n".join(lines))
 
     if errors:

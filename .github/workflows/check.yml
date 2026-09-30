@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
     inputs:
       debug:
-        description: "Сохранить скриншоты страниц (для настройки селекторов)"
+        description: "Сохранить ответы API в ветку debug"
         type: boolean
         default: false
 
@@ -31,19 +31,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-
-      - run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
 
       - name: Проверка
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
-          SEARCH_SELECTOR: ${{ vars.SEARCH_SELECTOR }}
-          RESULT_SELECTOR: ${{ vars.RESULT_SELECTOR }}
+          REGISTRY_API_URL: ${{ vars.REGISTRY_API_URL }}
           DEBUG: ${{ (inputs.debug || github.event_name == 'push') && '1' || '' }}
-        run: python check.py
+        run: python check.py | tee debug-log.txt
 
       - name: Сохранить состояние
         if: always()
@@ -53,10 +48,10 @@ jobs:
           git add state.json bins.txt
           git diff --cached --quiet || (git commit -m "Обновление списка и состояния" && git pull --rebase && git push)
 
-      - name: Скриншоты в ветку debug
+      - name: Отладка в ветку debug
         if: always() && (inputs.debug || github.event_name == 'push')
         run: |
-          [ -d debug ] || exit 0
+          mkdir -p debug && mv debug-log.txt debug/ 2>/dev/null || true
           cd debug
           git init -q -b debug
           git add -A
