@@ -23,6 +23,17 @@ DEBUG = os.getenv("DEBUG", "") == "1"
 ASTANA = timezone(timedelta(hours=5))
 
 
+def snapshot(page, name: str) -> None:
+    if not DEBUG:
+        return
+    DEBUG_DIR.mkdir(exist_ok=True)
+    try:
+        page.screenshot(path=str(DEBUG_DIR / f"{name}.png"), full_page=True)
+        (DEBUG_DIR / f"{name}.html").write_text(page.content(), encoding="utf-8")
+    except Exception as e:
+        (DEBUG_DIR / f"{name}.error.txt").write_text(repr(e), encoding="utf-8")
+
+
 def check_bin(page, bin_: str) -> tuple[bool, str]:
     page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60_000)
     search = page.locator(SEARCH_SELECTOR).first
@@ -34,11 +45,7 @@ def check_bin(page, bin_: str) -> tuple[bool, str]:
     except PWTimeout:
         pass
     page.wait_for_timeout(2_000)
-
-    if DEBUG:
-        DEBUG_DIR.mkdir(exist_ok=True)
-        page.screenshot(path=str(DEBUG_DIR / f"{bin_}.png"), full_page=True)
-        (DEBUG_DIR / f"{bin_}.html").write_text(page.content(), encoding="utf-8")
+    snapshot(page, bin_)
 
     for row in page.locator(RESULT_SELECTOR).all():
         text = row.inner_text()
@@ -60,12 +67,20 @@ def main() -> int:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(locale="ru-RU")
+        if DEBUG:
+            try:
+                page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60_000)
+            except Exception as e:
+                DEBUG_DIR.mkdir(exist_ok=True)
+                (DEBUG_DIR / "start.error.txt").write_text(repr(e), encoding="utf-8")
+            snapshot(page, "start")
         for bin_, name in bins.items():
             if bin_ in state["found"]:
                 continue
             try:
                 found, row_text = check_bin(page, bin_)
             except Exception as e:
+                snapshot(page, f"{bin_}.error")
                 errors.append(f"{bin_}: {type(e).__name__}: {str(e).splitlines()[0][:200]}")
                 continue
             print(f"{bin_} {name}: {'НАЙДЕН' if found else 'нет'}")
