@@ -1,0 +1,57 @@
+name: Проверка реестра
+
+on:
+  schedule:
+    # 09:00 и 18:00 по Астане (UTC+5)
+    - cron: "0 4 * * *"
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: "Сохранить скриншоты страниц (для настройки селекторов)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: registry-check
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt && python -m playwright install --with-deps chromium
+
+      - name: Проверка
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+          SEARCH_SELECTOR: ${{ vars.SEARCH_SELECTOR }}
+          RESULT_SELECTOR: ${{ vars.RESULT_SELECTOR }}
+          DEBUG: ${{ inputs.debug && '1' || '' }}
+        run: python check.py
+
+      - name: Сохранить состояние
+        if: always()
+        run: |
+          git config user.name "registry-bot"
+          git config user.email "registry-bot@users.noreply.github.com"
+          git add state.json
+          git diff --cached --quiet || (git commit -m "Обновление state.json" && git push)
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.debug
+        with:
+          name: debug
+          path: debug/
