@@ -35,7 +35,6 @@ jobs:
       - name: Проверка
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           REGISTRY_API_URL: ${{ vars.REGISTRY_API_URL }}
           DEBUG: ${{ (inputs.debug || github.event_name == 'push') && '1' || '' }}
         run: python check.py | tee debug-log.txt
@@ -45,7 +44,7 @@ jobs:
         run: |
           git config user.name "registry-bot"
           git config user.email "registry-bot@users.noreply.github.com"
-          git add state.json bins.txt
+          git add state.json
           git diff --cached --quiet || (git commit -m "Обновление списка и состояния" && git pull --rebase && git push)
 
       - name: Отладка в ветку debug

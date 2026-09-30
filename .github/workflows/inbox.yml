@@ -25,12 +25,11 @@ jobs:
       - name: Обработка сообщений
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python inbox.py
 
       - name: Сохранить изменения
         run: |
           git config user.name "registry-bot"
           git config user.email "registry-bot@users.noreply.github.com"
-          git add state.json bins.txt
+          git add state.json
           git diff --cached --quiet || (git commit -m "Обновление списка БИН" && git pull --rebase && git push)
