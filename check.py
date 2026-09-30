@@ -1,19 +1,16 @@
 import html
-import json
 import os
 import re
 import sys
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
+from inbox import load_bins, load_state, process_inbox, save_state, send_telegram
+
 ROOT = Path(__file__).parent
-BINS_FILE = ROOT / "bins.txt"
-STATE_FILE = ROOT / "state.json"
 DEBUG_DIR = ROOT / "debug"
 
 REGISTRY_URL = os.getenv("REGISTRY_URL") or "https://e-ondiris.gov.kz"
@@ -21,48 +18,9 @@ SEARCH_SELECTOR = os.getenv("SEARCH_SELECTOR") or (
     "input[type=search], input[placeholder*='БИН' i], input[placeholder*='поиск' i], input[type=text]"
 )
 RESULT_SELECTOR = os.getenv("RESULT_SELECTOR") or "table tbody tr, [role=row], .ant-table-row"
-TG_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 DEBUG = os.getenv("DEBUG", "") == "1"
 
 ASTANA = timezone(timedelta(hours=5))
-
-
-def load_bins() -> dict[str, str]:
-    bins = {}
-    for line in BINS_FILE.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        parts = line.split(maxsplit=1)
-        bin_ = re.sub(r"\D", "", parts[0])
-        if len(bin_) != 12:
-            print(f"Пропускаю некорректный БИН: {parts[0]}", file=sys.stderr)
-            continue
-        bins[bin_] = parts[1] if len(parts) > 1 else ""
-    return bins
-
-
-def load_state() -> dict:
-    if STATE_FILE.exists():
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
-    return {"found": {}}
-
-
-def save_state(state: dict) -> None:
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def send_telegram(text: str) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
-        print("[telegram не настроен]\n" + text)
-        return
-    data = urllib.parse.urlencode(
-        {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": "true"}
-    ).encode()
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    with urllib.request.urlopen(url, data=data, timeout=30) as resp:
-        resp.read()
 
 
 def check_bin(page, bin_: str) -> tuple[bool, str]:
@@ -90,6 +48,10 @@ def check_bin(page, bin_: str) -> tuple[bool, str]:
 
 
 def main() -> int:
+    try:
+        process_inbox()
+    except Exception as e:
+        print(f"Не удалось обработать сообщения Telegram: {e}", file=sys.stderr)
     bins = load_bins()
     state = load_state()
     now = datetime.now(ASTANA).strftime("%d.%m.%Y %H:%M")

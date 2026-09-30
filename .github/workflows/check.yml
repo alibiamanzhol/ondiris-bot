@@ -47,8 +47,8 @@ jobs:
         run: |
           git config user.name "registry-bot"
           git config user.email "registry-bot@users.noreply.github.com"
-          git add state.json
-          git diff --cached --quiet || (git commit -m "Обновление state.json" && git push)
+          git add state.json bins.txt
+          git diff --cached --quiet || (git commit -m "Обновление списка и состояния" && git pull --rebase && git push)
 
       - uses: actions/upload-artifact@v4
         if: inputs.debug
