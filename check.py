@@ -34,6 +34,27 @@ def snapshot(page, name: str) -> None:
         (DEBUG_DIR / f"{name}.error.txt").write_text(repr(e), encoding="utf-8")
 
 
+def recon(page) -> None:
+    DEBUG_DIR.mkdir(exist_ok=True)
+    log = []
+    page.on("response", lambda r: log.append(f"{r.status} {r.request.method} {r.url}"))
+    page.on("requestfailed", lambda r: log.append(f"FAILED {r.method} {r.url} {r.failure}"))
+    page.on("console", lambda m: log.append(f"CONSOLE {m.type}: {m.text[:300]}"))
+    try:
+        page.goto(REGISTRY_URL, wait_until="domcontentloaded", timeout=60_000)
+    except Exception as e:
+        log.append(f"GOTO ERROR {e!r}")
+    page.wait_for_timeout(20_000)
+    snapshot(page, "start")
+    for path in ["/env-config.js", *re.findall(r'src="(/assets/[^"]+\.js)"', page.content())]:
+        try:
+            body = page.request.get(REGISTRY_URL.rstrip("/") + path, timeout=60_000).text()
+            (DEBUG_DIR / path.strip("/").replace("/", "_")).write_text(body, encoding="utf-8")
+        except Exception as e:
+            log.append(f"ASSET ERROR {path} {e!r}")
+    (DEBUG_DIR / "network.txt").write_text("\n".join(log), encoding="utf-8")
+
+
 def check_bin(page, bin_: str) -> tuple[bool, str]:
     page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60_000)
     search = page.locator(SEARCH_SELECTOR).first
@@ -68,12 +89,7 @@ def main() -> int:
         browser = p.chromium.launch()
         page = browser.new_page(locale="ru-RU")
         if DEBUG:
-            try:
-                page.goto(REGISTRY_URL, wait_until="networkidle", timeout=60_000)
-            except Exception as e:
-                DEBUG_DIR.mkdir(exist_ok=True)
-                (DEBUG_DIR / "start.error.txt").write_text(repr(e), encoding="utf-8")
-            snapshot(page, "start")
+            recon(page)
         for bin_, name in bins.items():
             if bin_ in state["found"]:
                 continue
