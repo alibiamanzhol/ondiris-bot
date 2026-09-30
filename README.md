@@ -10,9 +10,10 @@
    `https://api.telegram.org/bot<ТОКЕН>/getUpdates`: в ответе найдите `"chat":{"id": ...}`, это и есть chat_id.
    Для группы добавьте бота в группу; её id начинается с `-100`.
 2. **Создайте приватный репозиторий на GitHub** и загрузите туда эти файлы.
-3. **Добавьте секреты:** Settings → Secrets and variables → Actions → *New repository secret*:
-   - `TELEGRAM_BOT_TOKEN`
-   - `TELEGRAM_CHAT_ID`
+3. **Добавьте секрет** `TELEGRAM_BOT_TOKEN`: Settings → Secrets and variables → Actions → *New repository secret*.
+   Затем напишите боту `/start`. Первый, кто напишет, станет владельцем: уведомления будут приходить ему,
+   а сообщения от остальных бот будет игнорировать. Чтобы сменить владельца, удалите `owner_chat_id` из `state.json`
+   или задайте секрет `TELEGRAM_CHAT_ID`.
 4. **Заполните `bins.txt`**, по одному БИН на строку. Название после БИН указывать необязательно.
 5. **Сделайте тестовый запуск:** Actions → «Проверка реестра» → *Run workflow*, отметьте `debug`.
    Скриншоты страниц появятся в артефакте `debug`.

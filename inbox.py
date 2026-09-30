@@ -70,11 +70,12 @@ def tg(method: str, **params) -> dict:
 
 
 def send_telegram(text: str, chat_id: str | None = None) -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
+    chat_id = chat_id or TG_CHAT_ID or load_state().get("owner_chat_id")
+    if not TG_TOKEN or not chat_id:
         print("[telegram не настроен]\n" + text)
         return
     for i in range(0, len(text), 4000):
-        tg("sendMessage", chat_id=chat_id or TG_CHAT_ID, text=text[i : i + 4000],
+        tg("sendMessage", chat_id=chat_id, text=text[i : i + 4000],
            parse_mode="HTML", disable_web_page_preview="true")
 
 
@@ -164,7 +165,7 @@ def handle_list(bins: dict[str, str], state: dict) -> str:
 
 
 def process_inbox() -> None:
-    if not TG_TOKEN or not TG_CHAT_ID:
+    if not TG_TOKEN:
         return
     state = load_state()
     bins = load_bins()
@@ -176,7 +177,11 @@ def process_inbox() -> None:
         state["tg_offset"] = upd["update_id"] + 1
         msg = upd.get("message") or {}
         chat_id = str(msg.get("chat", {}).get("id", ""))
-        if chat_id != TG_CHAT_ID:
+        owner = TG_CHAT_ID or state.get("owner_chat_id", "")
+        if not owner and chat_id:
+            owner = state["owner_chat_id"] = chat_id
+            send_telegram("👋 Вы стали владельцем бота. Уведомления будут приходить сюда.", chat_id)
+        if chat_id != owner:
             continue
         text = (msg.get("text") or msg.get("caption") or "").strip()
         doc = msg.get("document")
