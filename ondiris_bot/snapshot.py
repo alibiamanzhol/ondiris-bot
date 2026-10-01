@@ -3,7 +3,7 @@ import json
 from collections import Counter
 from dataclasses import dataclass, field
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -55,22 +55,29 @@ def _clean(value) -> str:
     return "" if text in ("-", "—") else text
 
 
-def state_from_rows(bin_: str, rows: list[dict]) -> OrgState:
+def row_identity(row: dict) -> str:
+    """Отпечаток строки реестра по всем её полям — не зависит от порядка строк в ответе."""
+    return hashlib.sha1(json.dumps(row, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def state_from_rows(bin_: str, rows: list[dict], total: int | None = None) -> OrgState:
     if not rows:
         return OrgState(bin=bin_, found=False)
-    parsed = []
+    records = {}
     for r in rows:
         name = _clean(r.get("product_name")) or "(без наименования)"
-        key = "|".join((_clean(r.get("registration_number")), _clean(r.get("product_code")), name.casefold()))
-        parsed.append((key, name, r.get("is_active") is not False))
-    # На портале встречаются полностью одинаковые строки — нумеруем их, чтобы каждая строка сайта была записью.
-    # Сортировка делает нумерацию независимой от порядка строк в ответе.
-    records, seen = {}, Counter()
-    for key, name, active in sorted(parsed, key=lambda x: (x[0], not x[2])):
-        seen[key] += 1
-        records[f"{key}#{seen[key]}" if seen[key] > 1 else key] = (name, active)
+        records[row_identity(r)] = (name, r.get("is_active") is not False)
     company = next((_clean(r.get("company_name")) for r in rows if _clean(r.get("company_name"))), "")
-    return OrgState(bin=bin_, found=True, company=company, records=records, total=len(rows))
+    return OrgState(bin=bin_, found=True, company=company, records=records,
+                    total=total if total is not None else len(rows))
+
+
+def merge(a: OrgState, b: OrgState) -> OrgState:
+    """Объединение двух получений одного БИН: запись считается удалённой, только если её нет в обоих."""
+    if not (a.found and b.found):
+        return b if b.found else a
+    return OrgState(bin=b.bin, found=True, company=b.company or a.company,
+                    records={**a.records, **b.records}, total=max(a.total, b.total))
 
 
 APPEARED = "appeared"

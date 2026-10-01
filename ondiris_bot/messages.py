@@ -7,7 +7,8 @@ from .snapshot import APPEARED, DISAPPEARED, Change, OrgState
 
 TG_LIMIT = 3800
 CARD_PRODUCTS = 30
-CHANGE_PRODUCTS = 25
+CHANGE_PRODUCTS = 15
+NAME_MAX = 150
 
 IN_REGISTRY = "✅"
 NOT_IN_REGISTRY = "❌"
@@ -91,9 +92,13 @@ def counts_line(states: list[OrgState | None], failed: int = 0) -> str:
     return "\n".join(parts)
 
 
+def _short(text: str) -> str:
+    return text if len(text) <= NAME_MAX else text[:NAME_MAX - 1].rstrip() + "…"
+
+
 def _bullets(items, limit: int) -> list[str]:
     items = list(items)
-    lines = [f"• {escape(x)}" for x in items[:limit]]
+    lines = [f"• {escape(_short(x))}" for x in items[:limit]]
     if len(items) > limit:
         lines.append(f"…и ещё {len(items) - limit}")
     return lines
@@ -111,7 +116,7 @@ def _names_block(names: list[str], limit: int) -> list[str]:
     if not names:
         return []
     if len(names) == 1:
-        return [f"📦 Товар: {escape(names[0])}"]
+        return [f"📦 Товар: {escape(_short(names[0]))}"]
     return [f"📦 Товары ({len(names)} {plural(len(names), 'наименование', 'наименования', 'наименований')}):",
             *_bullets(names, limit)]
 
@@ -165,7 +170,10 @@ def format_changes(changes: list[Change], checked_at: str) -> list[str]:
     foot = f"🕒 Проверка: {checked_at}"
     messages, blocks = [], []
     size = len(head) + len(foot) + 4
-    for block in (format_change(c) for c in changes):
+    blocks_all = []
+    for c in changes:
+        blocks_all += split_long(format_change(c), TG_LIMIT - len(head) - len(foot) - 8)
+    for block in blocks_all:
         if blocks and size + len(block) + 2 > TG_LIMIT:
             messages.append("\n\n".join([head, *blocks, foot]))
             blocks, size = [], len(head) + len(foot) + 4

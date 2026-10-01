@@ -8,12 +8,13 @@ from zoneinfo import ZoneInfo
 
 from .messages import format_changes
 from .portal import PortalClient, PortalError
-from .snapshot import Change, OrgState, diff
+from .snapshot import Change, OrgState, diff, merge
 from .storage import Storage, User
 
 log = logging.getLogger(__name__)
 
 SendFunc = Callable[[int, str], Awaitable[None]]
+TG_MAX_MESSAGE = 4096
 
 
 class PermanentSendError(Exception):
@@ -93,6 +94,19 @@ class Monitor:
             for b, r in recheck.items():
                 results[b] = r if isinstance(r, PortalError) or not r.found else PortalError("нестабильный ответ")
 
+        # Удаление записей тоже подтверждаем: запись считается удалённой, только если её нет и при повторном получении.
+        with_removals = [
+            b for b, r in results.items()
+            if isinstance(r, OrgState) and r.found
+            and any(s.bin == b and s.snapshot and s.snapshot.found and not s.snapshot.legacy
+                    and s.snapshot.records.keys() - r.records.keys() for s in subs)
+        ]
+        if with_removals:
+            recheck = await self.portal.get_many(with_removals, max_age=0)
+            for b, r in recheck.items():
+                if isinstance(r, OrgState):
+                    results[b] = merge(results[b], r)
+
         stats.success = sum(1 for r in results.values() if isinstance(r, OrgState))
         stats.errors = len(results) - stats.success
         for b, r in results.items():
@@ -142,6 +156,11 @@ class Monitor:
     async def _flush(self) -> int:
         sent = 0
         for msg in self.store.pending_messages():
+            if len(msg.text) > TG_MAX_MESSAGE:
+                self.store.mark_failed(msg.id, "message too long", permanent=True)
+                log.warning("[OUTBOX] message %s to user %s dropped: too long (%s chars)",
+                            msg.id, msg.user_id, len(msg.text))
+                continue
             try:
                 await self.send(msg.chat_id, msg.text)
             except PermanentSendError as e:

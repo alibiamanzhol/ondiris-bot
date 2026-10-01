@@ -368,3 +368,46 @@ def test_manual_run_marks_failed_bins(env):
     text = run(env.service.run_manual(A))
     assert f"⚠️ <code>{BIN2}</code>" in text and "по прошлой проверке: нет в реестре" in text
     assert f"✅ <code>{BIN1}</code>" in text
+
+
+def test_phantom_removal_is_confirmed_by_recheck(env):
+    full = {f"k{i}": f"Товар {i}" for i in range(10)}
+    env.portal.set(org(BIN1, products=full))
+    add(env, A, BIN1)
+    partial = org(BIN1, products={k: v for k, v in full.items() if k != "k3"})
+    calls = {"n": 0}
+    real_get = env.portal.get_state
+
+    async def flaky(b, max_age=None):
+        calls["n"] += 1
+        state = await real_get(b, max_age)
+        return partial if calls["n"] == 1 else state  # первый ответ неполный, повторный — полный
+    env.portal.get_state = flaky
+    stats = daily(env, A)
+    assert stats.changed == 0 and env.sent.messages == []
+    assert len(env.store.list_subscriptions(A)[0].snapshot.records) == 10
+
+
+def test_real_removal_reported(env):
+    env.portal.set(org(BIN1, products={"k1": "Трубы", "k2": "Кабель"}))
+    add(env, A, BIN1)
+    env.portal.set(org(BIN1, products={"k1": "Трубы"}))
+    daily(env, A)
+    assert "Удалены записи: 1" in env.sent.to(A)[0] and "Кабель" in env.sent.to(A)[0]
+
+
+def test_too_long_message_is_dropped_not_retried(env):
+    env.user(A)
+    env.store.apply_changes(A, A, [], [("long", "x" * 5000)])
+    assert run(env.monitor.flush_outbox()) == 0
+    assert env.store.pending_messages() == []
+    assert env.sent.messages == []
+
+
+def test_huge_change_fits_telegram_limit(env):
+    env.portal.set(org(BIN1, products={"k0": "Товар"}))
+    add(env, A, BIN1)
+    env.portal.set(org(BIN1, products={f"k{i}": "Очень длинное наименование товара " * 20 + str(i) for i in range(300)}))
+    daily(env, A)
+    msgs = env.sent.to(A)
+    assert msgs and all(len(m) <= 4096 for m in msgs)

@@ -431,9 +431,8 @@ def build_application(config: Config, portal: PortalClient | None = None, reques
         except Forbidden as e:
             raise PermanentSendError(str(e)) from e
         except BadRequest as e:
-            if "chat not found" in str(e).lower():
-                raise PermanentSendError(str(e)) from e
-            raise
+            # Повтор не поможет: чата нет или текст отвергнут Telegram (например, слишком длинный).
+            raise PermanentSendError(str(e)) from e
 
     monitor = Monitor(store, portal, config.tz, send)
     service = BotService(store, portal, monitor, config.tz, config.monitor_time)

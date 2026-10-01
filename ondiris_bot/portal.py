@@ -4,13 +4,14 @@ import time
 
 import httpx
 
-from .snapshot import OrgState, state_from_rows
+from .snapshot import OrgState, row_identity, state_from_rows
 
 log = logging.getLogger(__name__)
 
 SITE_URL = "https://e-ondiris.gov.kz"
 PAGE_LIMIT = 100
 MAX_PAGES = 100
+MAX_PASSES = 12
 
 
 class PortalError(Exception):
@@ -60,21 +61,57 @@ class PortalClient:
                 log.warning("[PORTAL] %s page %s attempt %s failed: %s", bin_, page, attempt + 1, e)
         raise PortalError(str(last))
 
-    async def _fetch_rows(self, bin_: str) -> list[dict]:
+    async def _pass(self, bin_: str, first: dict | None = None) -> tuple[list[dict], int]:
+        """Один проход по всем страницам. Возвращает строки и общее число записей по данным портала."""
         rows: list[dict] = []
         page = 1
         while True:
-            data = await self._get_page(bin_, page)
+            data = first if page == 1 and first is not None else await self._get_page(bin_, page)
             rows.extend(data["data"])
             meta = data.get("meta") or {}
             if not meta.get("hasNextPage"):
                 total = meta.get("total")
-                if isinstance(total, int) and total != len(rows):
-                    raise PortalError(f"получено {len(rows)} записей из {total}")
-                break
+                return rows, total if isinstance(total, int) else len(rows)
             page += 1
             if page > MAX_PAGES:
                 raise PortalError("слишком много страниц")
+
+    async def _fetch_rows(self, bin_: str) -> tuple[list[dict], int]:
+        """Все строки реестра по БИН.
+
+        Портал отдаёт максимум 100 строк за запрос и не держит порядок строк между страницами:
+        при каждом проходе часть строк повторяется, а часть не попадает ни на одну страницу.
+        Поэтому для больших компаний делаем несколько проходов и объединяем уникальные строки,
+        пока не наберём столько, сколько портал называет в meta.total.
+        """
+        first = await self._get_page(bin_, 1)
+        meta = first.get("meta") or {}
+        if not meta.get("hasNextPage"):
+            rows = first["data"]
+            total = meta.get("total")
+            if isinstance(total, int) and total != len(rows):
+                raise PortalError(f"получено {len(rows)} записей из {total}")
+            return self._own(bin_, rows), len(rows)
+
+        union: dict[str, dict] = {}
+        total, stale = 0, 0
+        for attempt in range(MAX_PASSES):
+            rows, total = await self._pass(bin_, first if attempt == 0 else None)
+            before = len(union)
+            for r in rows:
+                union.setdefault(row_identity(r), r)
+            if len(union) >= total:
+                break
+            stale = stale + 1 if len(union) == before else 0
+            if stale >= 2:
+                break  # два прохода без новых строк — остальное, видимо, полные дубли на стороне портала
+        else:
+            raise PortalError(f"собрано {len(union)} записей из {total} за {MAX_PASSES} проходов")
+        log.info("[PORTAL] %s: %s записей собрано за %s прох.", bin_, len(union), attempt + 1)
+        return self._own(bin_, list(union.values())), total
+
+    @staticmethod
+    def _own(bin_: str, rows: list[dict]) -> list[dict]:
         # Как на сайте: все строки по БИН, включая неактивные (признак активности хранится в снимке).
         return [r for r in rows if str(r.get("bin_iin") or "").strip() == bin_]
 
@@ -88,7 +125,8 @@ class PortalClient:
         fut = asyncio.get_running_loop().create_future()
         self._inflight[bin_] = fut
         try:
-            state = state_from_rows(bin_, await self._fetch_rows(bin_))
+            rows, total = await self._fetch_rows(bin_)
+            state = state_from_rows(bin_, rows, total)
             self._cache[bin_] = (time.monotonic(), state)
             fut.set_result(state)
             return state

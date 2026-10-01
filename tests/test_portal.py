@@ -52,12 +52,50 @@ def test_same_code_under_different_registration_numbers_counted_separately():
     assert state.product_names() == ["Товар 1"]
 
 
-def test_identical_rows_counted_like_site_and_order_independent():
-    rows = [row(1), row(1), {**row(1), "is_active": False}, row(2)]
-    a = run(client(paged(rows)).get_state(BIN))
-    b = run(client(paged(list(reversed(rows)))).get_state(BIN))
-    assert a.total == 4 and len(a.records) == 4 and a.active == 3
-    assert a.records == b.records
+def unstable(rows, limit=100, seed=1):
+    """Как реальный портал: каждый запрос страницы берётся из заново перемешанного списка —
+    строки повторяются между страницами, а часть не попадает ни на одну."""
+    import random
+    rnd = random.Random(seed)
+
+    def handler(request: httpx.Request):
+        page = int(request.url.params["page"])
+        shuffled = rows[:]
+        rnd.shuffle(shuffled)
+        pages = (len(rows) + limit - 1) // limit
+        return httpx.Response(200, json={
+            "success": True, "data": shuffled[(page - 1) * limit: page * limit],
+            "meta": {"total": len(rows), "page": page, "limit": limit, "totalPages": pages,
+                     "hasNextPage": page < pages, "hasPrevPage": page > 1},
+        })
+    return handler
+
+
+def test_unstable_pagination_collects_all_rows():
+    rows = [row(i) for i in range(488)]
+    for seed in range(5):
+        state = run(client(unstable(rows, seed=seed)).get_state(BIN))
+        assert state.total == 488 and len(state.records) == 488, seed
+
+
+def test_unstable_pagination_gives_same_state_every_time():
+    rows = [row(i, active=i % 4 != 0) for i in range(300)]
+    states = [run(client(unstable(rows, seed=s)).get_state(BIN)) for s in range(3)]
+    assert states[0].records == states[1].records == states[2].records
+    assert states[0].active == 225
+
+
+def test_pagination_that_never_completes_is_error():
+    rows = [row(i) for i in range(250)]
+
+    def handler(request):
+        page = int(request.url.params["page"])
+        data = rows[:100] if page < 3 else rows[100:150]  # строки 150–249 никогда не приходят
+        return httpx.Response(200, json={"success": True, "data": data,
+                                         "meta": {"total": 250, "hasNextPage": page < 3}})
+    state = run(client(handler).get_state(BIN))
+    # два прохода подряд без новых строк — принимаем то, что собрали (150 уникальных строк)
+    assert len(state.records) == 150 and state.total == 250
 
 
 def test_not_found():

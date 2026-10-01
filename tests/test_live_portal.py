@@ -10,22 +10,28 @@ pytestmark = pytest.mark.skipif(os.getenv("LIVE_PORTAL") != "1", reason="LIVE_PO
 URL = "https://e-ondiris.gov.kz/awp-api/registry-front"
 
 
-def test_real_portal_known_company_all_pages():
-    async def scenario():
+def test_real_portal_stable_and_complete():
+    async def fetch_three():
+        out = []
+        for _ in range(3):  # каждый раз новый клиент — без кэша
+            c = PortalClient(URL, concurrency=2)
+            try:
+                out.append(await c.get_state("181240006529"))
+            finally:
+                await c.close()
         c = PortalClient(URL, concurrency=2)
         try:
-            found = await c.get_state("181240006529")
             missing = await c.get_state("971240001315")
-            return found, missing
         finally:
             await c.close()
+        return out, missing
 
-    found, missing = run(scenario())
-    stats = (f"{found.company}: строк {found.total}, уникальных записей {len(found.records)}, "
-             f"активных {found.active}, наименований {len(found.product_names())}; "
-             f"второй БИН найден={missing.found} строк={missing.total}")
-    print(f"\n::notice title=LIVE portal::{stats}")
-    assert found.found and "Торг-Партнер" in found.company
-    assert found.total > 100  # собраны все страницы, а не только первая
-    assert len(found.records) == found.total  # каждая строка сайта — отдельная запись
-    assert 0 < found.active <= len(found.records)
+    states, missing = run(fetch_three())
+    s = states[0]
+    print(f"\n::notice title=LIVE portal::{s.company}: на сайте {s.total}, собрано {[len(x.records) for x in states]}, "
+          f"активных {s.active}, наименований {len(s.product_names())}; "
+          f"одинаково все три раза: {states[0].records == states[1].records == states[2].records}; "
+          f"второй БИН найден={missing.found}")
+    assert s.found and "Торг-Партнер" in s.company and s.total > 100
+    assert states[0].records == states[1].records == states[2].records  # нет ложных «изменений»
+    assert 0 < s.active <= len(s.records) <= s.total
