@@ -52,7 +52,7 @@ def test_same_code_under_different_registration_numbers_counted_separately():
     assert state.product_names() == ["Товар 1"]
 
 
-def unstable(rows, limit=100, seed=1):
+def unstable(rows, seed=1):
     """Как реальный портал: каждый запрос страницы берётся из заново перемешанного списка —
     строки повторяются между страницами, а часть не попадает ни на одну."""
     import random
@@ -60,6 +60,7 @@ def unstable(rows, limit=100, seed=1):
 
     def handler(request: httpx.Request):
         page = int(request.url.params["page"])
+        limit = int(request.url.params["limit"])
         shuffled = rows[:]
         rnd.shuffle(shuffled)
         pages = (len(rows) + limit - 1) // limit
@@ -94,7 +95,7 @@ def test_pagination_that_never_completes_is_error():
         return httpx.Response(200, json={"success": True, "data": data,
                                          "meta": {"total": 250, "hasNextPage": page < 3}})
     state = run(client(handler).get_state(BIN))
-    # два прохода подряд без новых строк — принимаем то, что собрали (150 уникальных строк)
+    # много проходов подряд без новых строк — принимаем то, что собрали (150 уникальных строк)
     assert len(state.records) == 150 and state.total == 250
 
 

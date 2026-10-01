@@ -11,7 +11,9 @@ log = logging.getLogger(__name__)
 SITE_URL = "https://e-ondiris.gov.kz"
 PAGE_LIMIT = 100
 MAX_PAGES = 100
-MAX_PASSES = 12
+MAX_PASSES = 25
+STALE_PASSES = 8
+PASS_LIMITS = (100, 50)
 
 
 class PortalError(Exception):
@@ -37,8 +39,8 @@ class PortalClient:
     async def close(self) -> None:
         await self._client.aclose()
 
-    async def _get_page(self, bin_: str, page: int) -> dict:
-        params = {"page": page, "limit": PAGE_LIMIT, "bin_iin": bin_}
+    async def _get_page(self, bin_: str, page: int, limit: int = PAGE_LIMIT) -> dict:
+        params = {"page": page, "limit": limit, "bin_iin": bin_}
         last: Exception | None = None
         for attempt, delay in enumerate((0, *self._retry_delays)):
             if delay:
@@ -61,12 +63,12 @@ class PortalClient:
                 log.warning("[PORTAL] %s page %s attempt %s failed: %s", bin_, page, attempt + 1, e)
         raise PortalError(str(last))
 
-    async def _pass(self, bin_: str, first: dict | None = None) -> tuple[list[dict], int]:
+    async def _pass(self, bin_: str, first: dict | None = None, limit: int = PAGE_LIMIT) -> tuple[list[dict], int]:
         """Один проход по всем страницам. Возвращает строки и общее число записей по данным портала."""
         rows: list[dict] = []
         page = 1
         while True:
-            data = first if page == 1 and first is not None else await self._get_page(bin_, page)
+            data = first if page == 1 and first is not None else await self._get_page(bin_, page, limit)
             rows.extend(data["data"])
             meta = data.get("meta") or {}
             if not meta.get("hasNextPage"):
@@ -96,15 +98,17 @@ class PortalClient:
         union: dict[str, dict] = {}
         total, stale = 0, 0
         for attempt in range(MAX_PASSES):
-            rows, total = await self._pass(bin_, first if attempt == 0 else None)
+            # Чередуем размер страницы: границы страниц сдвигаются, и «редкие» строки попадаются быстрее.
+            limit = PASS_LIMITS[attempt % len(PASS_LIMITS)]
+            rows, total = await self._pass(bin_, first if attempt == 0 else None, limit)
             before = len(union)
             for r in rows:
                 union.setdefault(row_identity(r), r)
             if len(union) >= total:
                 break
             stale = stale + 1 if len(union) == before else 0
-            if stale >= 2:
-                break  # два прохода без новых строк — остальное, видимо, полные дубли на стороне портала
+            if stale >= STALE_PASSES:
+                break  # много проходов подряд без новых строк — остальное, видимо, полные дубли на стороне портала
         else:
             raise PortalError(f"собрано {len(union)} записей из {total} за {MAX_PASSES} проходов")
         log.info("[PORTAL] %s: %s записей собрано за %s прох.", bin_, len(union), attempt + 1)

@@ -13,7 +13,7 @@ URL = "https://e-ondiris.gov.kz/awp-api/registry-front"
 def test_real_portal_stable_and_complete():
     async def fetch_three():
         out = []
-        for _ in range(3):  # каждый раз новый клиент — без кэша
+        for _ in range(5):  # каждый раз новый клиент — без кэша
             c = PortalClient(URL, concurrency=2)
             try:
                 out.append(await c.get_state("181240006529"))
@@ -30,8 +30,9 @@ def test_real_portal_stable_and_complete():
     s = states[0]
     print(f"\n::notice title=LIVE portal::{s.company}: на сайте {s.total}, собрано {[len(x.records) for x in states]}, "
           f"активных {s.active}, наименований {len(s.product_names())}; "
-          f"одинаково все три раза: {states[0].records == states[1].records == states[2].records}; "
+          f"одинаково все 5 раз: {all(x.records == s.records for x in states)}; "
           f"второй БИН найден={missing.found}")
     assert s.found and "Торг-Партнер" in s.company and s.total > 100
-    assert states[0].records == states[1].records == states[2].records  # нет ложных «изменений»
+    assert all(x.records == s.records for x in states)  # нет ложных «изменений»
+    assert len(s.records) == s.total
     assert 0 < s.active <= len(s.records) <= s.total
