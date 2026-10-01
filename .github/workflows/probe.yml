@@ -1,0 +1,16 @@
+name: probe
+on:
+  push:
+    paths: ["tools/probe.py", ".github/workflows/probe.yml"]
+permissions:
+  contents: write
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: mkdir -p out && python tools/probe.py > out/probe.txt 2>&1 || true
+      - run: |
+          cd out && git init -q -b debug && git add -A
+          git -c user.name=bot -c user.email=bot@users.noreply.github.com commit -qm probe
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" debug
