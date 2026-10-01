@@ -1,0 +1,9 @@
+limit 100 -> rows=488 meta_total=488 limit_back=100 pages=5 unique=373
+limit 500 -> rows=488 meta_total=488 limit_back=100 pages=5 unique=356
+limit 1000 -> rows=488 meta_total=488 limit_back=100 pages=5 unique=380
+limit 5000 -> rows=488 meta_total=488 limit_back=100 pages=5 unique=308
+stable limit100: False [434, 387, 369] [488, 488, 488]
+diff01 104 109
+fully identical duplicate rows (all fields): 54
+stable limit1000: False [342, 377, 410]
+limit1000 identical dup rows: 78 unique keys 410
